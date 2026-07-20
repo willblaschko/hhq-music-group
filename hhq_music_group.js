@@ -145,7 +145,9 @@ class HhqMusicGroup extends HTMLElement {
   _toggle(entity, currentLit) {
     this._optimistic = this._optimistic || {};
     this._optimistic[entity] = { lit: !currentLit, ts: Date.now() };
-    this._svc("script", "music_slot_toggle", { slot: this._config.slot, player: entity });
+    const data = { slot: this._config.slot, player: entity };
+    if (this._data && this._data.coord) data.seen_coord = this._data.coord;
+    this._svc("script", "music_slot_toggle", data);
     this._render();
   }
 
