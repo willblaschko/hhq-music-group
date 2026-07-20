@@ -59,6 +59,15 @@ class HhqMusicGroup extends HTMLElement {
     const n = this._config.slot;
     const anchor = (this._st(`input_text.music_slot_${n}`) || {}).state || "";
     let coord = this._coordOf(anchor);
+    // sticky header: mid-flap, a joining speaker's stale attrs can claim it
+    // leads its old group; keep the previous coordinator while its group
+    // still contains the anchor (real delegations drop the anchor -> flip).
+    if (coord && this._shownCoord && this._shownCoord !== coord) {
+      const prev = this._st(this._shownCoord);
+      if (prev && !["unknown", "unavailable"].includes(prev.state)
+          && this._grp(this._shownCoord).includes(anchor)) coord = this._shownCoord;
+    }
+    this._shownCoord = coord || null;
     let merged = 0;
     for (let j = 1; j < n; j++) {
       const c2 = this._coordOf((this._st(`input_text.music_slot_${j}`) || {}).state || "");
