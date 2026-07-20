@@ -123,12 +123,9 @@ class HhqMusicGroup extends HTMLElement {
     if (!d) return;
     body.innerHTML = "";
 
-    if (d.merged) {
-      body.innerHTML = `<div class="merged">Merged into Console ${d.merged}</div>`;
-      return;
-    }
+    const empty = !d.coord || d.merged;
 
-    if (d.coord) {
+    if (!empty) {
       const hdr = document.createElement("div"); hdr.className = "hdr";
       const art = d.art ? `<img class="art" src="${d.art}">`
                         : `<div class="art"></div>`;
@@ -157,6 +154,7 @@ class HhqMusicGroup extends HTMLElement {
     } else {
       body.innerHTML = `<div class="empty">Empty — tap a speaker to start a group here.</div>`;
     }
+    if (empty) for (const r of d.roster) r.lit = false;
 
     const roster = document.createElement("div"); roster.className = "roster";
     for (const r of d.roster) {
