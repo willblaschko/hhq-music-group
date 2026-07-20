@@ -64,7 +64,12 @@ class HhqMusicGroup extends HTMLElement {
     this._unsub = this._hass.connection.subscribeMessage(
       (msg) => {
         try { this._data = JSON.parse(msg.result); } catch (e) { return; }
-        this._pending = {};
+        const now = Date.now();
+        this._optimistic = this._optimistic || {};
+        for (const [e, o] of Object.entries(this._optimistic)) {
+          const actual = this._data.roster.find((r) => r.e === e);
+          if (!actual || actual.lit === o.lit || now - o.ts > 25000) delete this._optimistic[e];
+        }
         this._render();
       },
       { type: "render_template", template: this._template(), report_errors: false }
@@ -112,10 +117,11 @@ class HhqMusicGroup extends HTMLElement {
 
   _svc(domain, service, data) { this._hass.callService(domain, service, data); }
 
-  _toggle(entity, chipEl) {
-    chipEl.classList.add("pending");
-    this._pending[entity] = true;
+  _toggle(entity, currentLit) {
+    this._optimistic = this._optimistic || {};
+    this._optimistic[entity] = { lit: !currentLit, ts: Date.now() };
     this._svc("script", "music_slot_toggle", { slot: this._config.slot, player: entity });
+    this._render();
   }
 
   _render() {
@@ -123,7 +129,9 @@ class HhqMusicGroup extends HTMLElement {
     if (!d) return;
     body.innerHTML = "";
 
+    this._optimistic = this._optimistic || {};
     const empty = !d.coord || d.merged;
+    const seedPending = empty && Object.values(this._optimistic).some((o) => o.lit);
 
     if (!empty) {
       const hdr = document.createElement("div"); hdr.className = "hdr";
@@ -152,16 +160,19 @@ class HhqMusicGroup extends HTMLElement {
         body.appendChild(vol);
       }
     } else {
-      body.innerHTML = `<div class="empty">Empty — tap a speaker to start a group here.</div>`;
+      body.innerHTML = `<div class="empty">${seedPending
+        ? "Starting group…" : "Empty — tap a speaker to start a group here."}</div>`;
     }
     if (empty) for (const r of d.roster) r.lit = false;
 
     const roster = document.createElement("div"); roster.className = "roster";
     for (const r of d.roster) {
+      const o = this._optimistic[r.e];
+      const lit = o ? o.lit : r.lit;
       const c = document.createElement("div");
-      c.className = "chip" + (r.lit ? " lit" : "") + (this._pending[r.e] ? " pending" : "");
+      c.className = "chip" + (lit ? " lit" : "") + (o ? " pending" : "");
       c.textContent = r.n;
-      c.addEventListener("click", () => this._toggle(r.e, c));
+      c.addEventListener("click", () => this._toggle(r.e, lit));
       roster.appendChild(c);
     }
     body.appendChild(roster);
