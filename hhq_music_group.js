@@ -111,6 +111,31 @@ class HhqMusicGroup extends HTMLElement {
         .empty { font-size: 13px; color: var(--secondary-text-color); padding: 8px 2px; }
         .merged { font-size: 13px; color: var(--secondary-text-color); padding: 14px 2px;
                   text-align: center; }
+        .ov { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 12;
+              display: flex; align-items: center; justify-content: center; }
+        .panel { background: var(--card-background-color, #fff); border-radius: 16px;
+                 width: min(440px, 92vw); max-height: 82vh; overflow-y: auto;
+                 padding: 14px; box-shadow: 0 8px 40px rgba(0,0,0,.4); }
+        .sbox { display: flex; align-items: center; gap: 8px;
+                background: var(--secondary-background-color); border-radius: 12px;
+                padding: 6px 12px; margin-bottom: 6px; }
+        .sbox input { flex: 1; border: none; outline: none; background: transparent;
+                      color: var(--primary-text-color); font: inherit; font-size: 14px; }
+        .sbox ha-icon { color: var(--secondary-text-color); --mdc-icon-size: 20px; }
+        .lbl { font-size: 11px; letter-spacing: .5px; text-transform: uppercase;
+               color: var(--secondary-text-color); margin: 10px 2px 4px; }
+        .row { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px;
+               scrollbar-width: none; }
+        .row::-webkit-scrollbar { display: none; }
+        .tile { flex: none; width: 76px; cursor: pointer; }
+        .tile img { width: 76px; height: 76px; border-radius: 10px; object-fit: cover;
+                    background: var(--secondary-background-color); display: block; }
+        .tile.played img { outline: 3px solid var(--success-color, #4caf50); }
+        .tt { font-size: 11px; line-height: 1.25; margin-top: 3px;
+              color: var(--primary-text-color); display: -webkit-box;
+              -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+        .ts { font-size: 10px; color: var(--secondary-text-color); white-space: nowrap;
+              overflow: hidden; text-overflow: ellipsis; }
       </style>
       <div class="card"><div id="body"><div class="empty">…</div></div></div>`;
   }
@@ -179,8 +204,106 @@ class HhqMusicGroup extends HTMLElement {
   }
 
   _openModal() {
-    // Phase 3 fills this in (search + recents dialog).
-    console.info("hhq-music-group: search modal ships in phase 3");
+    if (this._root.querySelector(".ov")) return;
+    const ov = document.createElement("div"); ov.className = "ov";
+    ov.innerHTML = `
+      <div class="panel">
+        <div class="sbox"><ha-icon id="micon" icon="mdi:magnify"></ha-icon>
+          <input id="q" type="search" placeholder="Play something here…"
+                 autocomplete="off" spellcheck="false" enterkeyhint="search">
+        </div>
+        <div id="mout"></div>
+      </div>`;
+    ov.addEventListener("click", (e) => { if (e.target === ov) ov.remove(); });
+    this._escHandler = (e) => { if (e.key === "Escape") ov.remove(); };
+    ov.addEventListener("keydown", this._escHandler);
+    this._root.querySelector(".card").appendChild(ov);
+    const q = ov.querySelector("#q");
+    q.addEventListener("input", () => {
+      clearTimeout(this._deb);
+      const v = q.value.trim();
+      if (v.length < 2) { this._renderRecents(ov); return; }
+      this._deb = setTimeout(() => this._search(ov, v), 650);
+    });
+    q.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && q.value.trim().length >= 2) this._search(ov, q.value.trim());
+    });
+    this._renderRecents(ov);
+    setTimeout(() => q.focus(), 50);
+  }
+
+  _renderRecents(ov) {
+    const out = ov.querySelector("#mout");
+    const ctx = this._hass.states["sensor.spotify_recently_played"]?.attributes?.contexts || [];
+    const playable = ctx.filter((c) => c.id && c.id.startsWith("spotify:") && c.kind !== "artist");
+    out.innerHTML = "";
+    if (!playable.length) {
+      out.innerHTML = `<div class="empty">Type to search Spotify.</div>`; return;
+    }
+    out.appendChild(this._group(ov, "Recently played",
+      playable.map((c) => [c.id, c.img, c.t, c.kind])));
+  }
+
+  async _svcSearch(service, criteria) {
+    const r = await this._hass.connection.sendMessagePromise({
+      type: "call_service", domain: "spotifyplus", service,
+      service_data: { entity_id: this._config.search_entity, criteria, limit: 6 },
+      return_response: true,
+    });
+    return (r?.response?.result?.items) || [];
+  }
+
+  async _search(ov, criteria) {
+    clearTimeout(this._deb);
+    const icon = ov.querySelector("#micon");
+    icon.icon = "mdi:loading";
+    try {
+      const [tracks, playlists, albums] = await Promise.all([
+        this._svcSearch("search_tracks", criteria),
+        this._svcSearch("search_playlists", criteria),
+        this._svcSearch("search_albums", criteria),
+      ]);
+      const out = ov.querySelector("#mout"); out.innerHTML = "";
+      const groups = [
+        ["Songs", tracks.map((t) => [t.uri, t.album?.image_url, t.name,
+          (t.artists || []).map((a) => a.name).join(", ")])],
+        ["Playlists", playlists.filter(Boolean).map((p) => [p.uri, p.image_url, p.name, ""])],
+        ["Albums", albums.map((a) => [a.uri, a.image_url, a.name,
+          (a.artists || []).map((x) => x.name).join(", ")])],
+      ];
+      let any = false;
+      for (const [label, items] of groups) {
+        if (!items.length) continue;
+        any = true;
+        out.appendChild(this._group(ov, label, items));
+      }
+      if (!any) out.innerHTML = `<div class="empty">No results.</div>`;
+    } catch (e) {
+      ov.querySelector("#mout").innerHTML =
+        `<div class="empty">Search failed: ${e.message || e}</div>`;
+    } finally { icon.icon = "mdi:magnify"; }
+  }
+
+  _group(ov, label, items) {
+    const g = document.createElement("div");
+    g.innerHTML = `<div class="lbl">${label}</div>`;
+    const row = document.createElement("div"); row.className = "row";
+    for (const [uri, img, title, sub] of items) {
+      const t = document.createElement("div"); t.className = "tile";
+      t.innerHTML = `<img loading="lazy" src="${img || ""}">
+        <div class="tt">${title}</div><div class="ts">${sub || ""}</div>`;
+      t.addEventListener("click", async () => {
+        try {
+          await this._hass.callService("script", "music_slot_play",
+            { slot: this._config.slot, context_id: uri });
+          t.classList.add("played");
+          setTimeout(() => ov.remove(), 700);
+        } catch (e) { t.querySelector(".ts").textContent = "play failed"; }
+      });
+      row.appendChild(t);
+    }
+    g.appendChild(row);
+    return g;
   }
 
   getCardSize() { return 4; }
