@@ -1,6 +1,6 @@
 /* HHQ Music Group — one self-contained Sonos session console.
    Config: { slot: 1 }. Render N instances for N groups.
-   State via a single render_template subscription (Sonos-truth-adjacent);
+   State computed client-side from hass.states (instant, no template rate limits);
    mutations via script.music_slot_toggle / music_slot_play (fire-and-forget,
    executed by a Node-RED SOAP sequencer against the speakers directly). */
 
@@ -13,10 +13,8 @@ class HhqMusicGroup extends HTMLElement {
     this._data = null;
   }
 
-  connectedCallback() { this._maybeSubscribe(); }
-  disconnectedCallback() {
-    if (this._unsub) { this._unsub.then((u) => u()).catch(() => {}); this._unsub = null; }
-  }
+  connectedCallback() {}
+  disconnectedCallback() {}
 
   set hass(hass) {
     this._hass = hass;
@@ -24,56 +22,72 @@ class HhqMusicGroup extends HTMLElement {
       this._root = this.attachShadow({ mode: "open" });
       this._shell();
     }
-    this._maybeSubscribe();
+    this._ensureRoster().then(() => {
+      const d = this._compute();
+      const key = JSON.stringify(d);
+      if (key !== this._key) { this._key = key; this._data = d; this._reconcile(d); this._render(); }
+    });
   }
 
-  _template() {
+  async _ensureRoster() {
+    if (this._rosterIds) return;
+    if (!this._rosterFetch) {
+      this._rosterFetch = this._hass.connection
+        .sendMessagePromise({ type: "config/entity_registry/list" })
+        .then((ents) => {
+          this._rosterIds = ents
+            .filter((e) => e.platform === "sonos" && e.entity_id.startsWith("media_player.")
+              && !/surround|back_left|back_right/.test(e.entity_id)
+              && !e.disabled_by && !e.hidden_by)
+            .map((e) => e.entity_id);
+        });
+    }
+    return this._rosterFetch;
+  }
+
+  _st(e) { return this._hass.states[e]; }
+  _grp(e) { const s = this._st(e); return (s && s.attributes.group_members) || [e]; }
+
+  _coordOf(anchor) {
+    if (!anchor || !anchor.startsWith("media_player.")) return "";
+    const s = this._st(anchor);
+    if (!s || ["unknown", "unavailable"].includes(s.state)) return "";
+    return this._grp(anchor)[0];
+  }
+
+  _compute() {
     const n = this._config.slot;
-    return `
-{% set spk = integration_entities('sonos') | select('match','media_player')
-   | reject('search','surround|back_left|back_right') | select('has_value')
-   | reject('is_state','unavailable') | list | sort %}
-{% set anchor = states('input_text.music_slot_${n}') %}
-{% set ok = anchor.startswith('media_player.') and states(anchor) not in ['unknown','unavailable'] %}
-{% set coord = ((state_attr(anchor,'group_members') or [anchor]) | first) if ok else '' %}
-{% set merged = namespace(v=0) %}
-{% for j in range(1, ${n}) %}
-  {% set a2 = states('input_text.music_slot_' ~ j) %}
-  {% set ok2 = a2.startswith('media_player.') and states(a2) not in ['unknown','unavailable'] %}
-  {% set c2 = ((state_attr(a2,'group_members') or [a2]) | first) if ok2 else '' %}
-  {% if merged.v == 0 and c2 != '' and c2 == coord %}{% set merged.v = j %}{% endif %}
-{% endfor %}
-{% set mem = (state_attr(coord,'group_members') or [coord]) if coord != '' else [] %}
-{% set ros = namespace(l=[]) %}
-{% for p in spk %}
-  {% set g = state_attr(p,'group_members') or [p] %}
-  {% set ns2 = namespace(x=state_attr(p,'friendly_name') or p) %}
-  {% set ros.l = ros.l + [{'e': p, 'n': ns2.x, 'lit': p in mem}] %}
-{% endfor %}
-{{ {'coord': coord, 'merged': merged.v, 'roster': ros.l,
-    'state': states(coord) if coord != '' else '',
-    'title': state_attr(coord,'media_title') if coord != '' else none,
-    'artist': state_attr(coord,'media_artist') if coord != '' else none,
-    'art': state_attr(coord,'entity_picture') if coord != '' else none,
-    'vol': state_attr(coord,'volume_level') if coord != '' else none,
-    'members': mem} | to_json }}`;
+    const anchor = (this._st(`input_text.music_slot_${n}`) || {}).state || "";
+    let coord = this._coordOf(anchor);
+    let merged = 0;
+    for (let j = 1; j < n; j++) {
+      const c2 = this._coordOf((this._st(`input_text.music_slot_${j}`) || {}).state || "");
+      if (c2 && c2 === coord) { merged = j; break; }
+    }
+    const cs = coord ? this._st(coord) : null;
+    const mem = coord && cs ? this._grp(coord) : [];
+    const roster = (this._rosterIds || [])
+      .filter((e) => { const s = this._st(e); return s && s.state !== "unavailable"; })
+      .sort()
+      .map((e) => ({ e, n: (this._st(e).attributes.friendly_name || e), lit: mem.includes(e) }));
+    return {
+      coord, merged, roster,
+      state: cs ? cs.state : "",
+      title: cs ? cs.attributes.media_title : null,
+      artist: cs ? cs.attributes.media_artist : null,
+      art: cs ? cs.attributes.entity_picture : null,
+      vol: cs ? cs.attributes.volume_level : null,
+      members: mem,
+    };
   }
 
-  _maybeSubscribe() {
-    if (!this._hass || this._unsub || !this._root) return;
-    this._unsub = this._hass.connection.subscribeMessage(
-      (msg) => {
-        try { this._data = JSON.parse(msg.result); } catch (e) { return; }
-        const now = Date.now();
-        this._optimistic = this._optimistic || {};
-        for (const [e, o] of Object.entries(this._optimistic)) {
-          const actual = this._data.roster.find((r) => r.e === e);
-          if (!actual || actual.lit === o.lit || now - o.ts > 25000) delete this._optimistic[e];
-        }
-        this._render();
-      },
-      { type: "render_template", template: this._template(), report_errors: false }
-    );
+  _reconcile(d) {
+    const now = Date.now();
+    this._optimistic = this._optimistic || {};
+    for (const [e, o] of Object.entries(this._optimistic)) {
+      const actual = d.roster.find((r) => r.e === e);
+      if (!actual || actual.lit === o.lit || now - o.ts > 25000) delete this._optimistic[e];
+    }
   }
 
   _shell() {
