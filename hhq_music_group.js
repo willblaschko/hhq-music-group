@@ -121,6 +121,8 @@ class HhqMusicGroup extends HTMLElement {
                color: var(--primary-text-color); flex: none;
                display: flex; align-items: center; justify-content: center; }
         .btn ha-icon { --mdc-icon-size: 22px; }
+        .btn.sm { width: 34px; height: 34px; }
+        .btn.sm ha-icon { --mdc-icon-size: 18px; }
         .vol { display: flex; align-items: center; gap: 8px; margin: 8px 2px 2px; }
         .vol ha-icon { color: var(--secondary-text-color); --mdc-icon-size: 18px; flex: none; }
         input[type=range] { flex: 1; accent-color: var(--primary-color); height: 22px; }
@@ -193,9 +195,15 @@ class HhqMusicGroup extends HTMLElement {
           <div class="t">${d.title || (d.state === "paused" ? "Paused" : "Nothing playing")}</div>
           <div class="a">${d.artist || d.members.length + " speaker" + (d.members.length > 1 ? "s" : "")}</div>
         </div>
+        <button class="btn sm" id="prev"><ha-icon icon="mdi:skip-previous"></ha-icon></button>
         <button class="btn" id="pp"><ha-icon icon="${playing ? "mdi:pause" : "mdi:play"}"></ha-icon></button>
-        <button class="btn" id="find"><ha-icon icon="mdi:magnify"></ha-icon></button>`;
+        <button class="btn sm" id="next"><ha-icon icon="mdi:skip-next"></ha-icon></button>
+        <button class="btn sm" id="find"><ha-icon icon="mdi:magnify"></ha-icon></button>`;
       body.appendChild(hdr);
+      hdr.querySelector("#prev").addEventListener("click", () =>
+        this._svc("media_player", "media_previous_track", { entity_id: d.coord }));
+      hdr.querySelector("#next").addEventListener("click", () =>
+        this._svc("media_player", "media_next_track", { entity_id: d.coord }));
       hdr.querySelector("#pp").addEventListener("click", () =>
         this._svc("media_player", "media_play_pause", { entity_id: d.coord }));
       hdr.querySelector("#find").addEventListener("click", () => this._openModal());
